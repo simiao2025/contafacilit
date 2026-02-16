@@ -121,6 +121,33 @@ module "elasticache" {
   tags = local.tags
 }
 
+  tags = local.tags
+}
+
+module "kms" {
+  source = "../../modules/kms"
+
+  project_name = local.project_name
+  environment  = local.environment
+  tags         = local.tags
+}
+
+module "sqs" {
+  source = "../../modules/sqs"
+
+  project_name = local.project_name
+  environment  = local.environment
+  tags         = local.tags
+}
+
+module "waf" {
+  source = "../../modules/waf"
+
+  project_name = local.project_name
+  environment  = local.environment
+  tags         = local.tags
+}
+
 module "ecs" {
   source = "../../modules/ecs"
 
@@ -133,6 +160,9 @@ module "ecs" {
   alb_security_group_id     = module.security.alb_security_group_id
   db_credentials_secret_arn = module.rds.db_credentials_secret_arn
   redis_connection_string   = module.elasticache.redis_connection_string
+  sqs_events_queue_arn      = module.sqs.events_queue_arn
+  sqs_ai_jobs_queue_arn     = module.sqs.ai_jobs_queue_arn
+  waf_acl_arn               = module.waf.waf_acl_arn
 
   # Prod: dimensionado para 10.000 clientes
   api_cpu           = 1024       # 1 vCPU
@@ -146,6 +176,11 @@ module "ecs" {
   worker_desired_count = 2
   worker_min_count     = 1
   worker_max_count     = 5
+
+  ia_worker_cpu           = 2048 # IA exige mais recursos em prod
+  ia_worker_memory        = 4096
+  ia_worker_desired_count = 2
+  ia_worker_max_count     = 10
 
   tags = local.tags
 }
@@ -162,14 +197,17 @@ module "s3" {
 module "monitoring" {
   source = "../../modules/monitoring"
 
-  project_name            = local.project_name
-  environment             = local.environment
-  ecs_cluster_name        = module.ecs.cluster_name
-  ecs_api_service_name    = module.ecs.api_service_name
-  ecs_worker_service_name = module.ecs.worker_service_name
-  rds_instance_id         = module.rds.db_instance_id
-  alb_arn                 = module.ecs.alb_arn
-  alarm_email             = var.alarm_email
+  project_name               = local.project_name
+  environment                = local.environment
+  ecs_cluster_name           = module.ecs.cluster_name
+  ecs_api_service_name       = module.ecs.api_service_name
+  ecs_worker_service_name    = module.ecs.worker_service_name
+  ecs_ia_worker_service_name = module.ecs.ia_worker_service_name
+  rds_instance_id            = module.rds.db_instance_id
+  alb_arn                    = module.ecs.alb_arn
+  sqs_events_queue_name      = replace(module.sqs.events_queue_url, "/.*\\//", "")
+  sqs_ai_jobs_queue_name     = replace(module.sqs.ai_jobs_queue_url, "/.*\\//", "")
+  alarm_email                = var.alarm_email
 
   tags = local.tags
 }

@@ -82,6 +82,26 @@ resource "aws_cloudwatch_metric_alarm" "worker_cpu_high" {
   tags = var.tags
 }
 
+resource "aws_cloudwatch_metric_alarm" "ia_worker_cpu_high" {
+  alarm_name          = "${var.project_name}-${var.environment}-ia-worker-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 85
+  alarm_description   = "IA Worker CPU > 85% por 3 minutos"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    ClusterName = var.ecs_cluster_name
+    ServiceName = var.ecs_ia_worker_service_name
+  }
+
+  tags = var.tags
+}
+
 # ═════════════════════════════════════════════
 # RDS ALARMS
 # ═════════════════════════════════════════════
@@ -265,9 +285,66 @@ resource "aws_cloudwatch_dashboard" "main" {
           stat   = "Sum"
           region = data.aws_region.current.name
         }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          title   = "ECS IA Worker — CPU & Memory"
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", "ClusterName", var.ecs_cluster_name, "ServiceName", var.ecs_ia_worker_service_name],
+            [".", "MemoryUtilization", ".", ".", ".", "."]
+          ]
+          period = 300
+          stat   = "Average"
+          region = data.aws_region.current.name
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          title   = "SQS Queues — Messages Content"
+          metrics = [
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.sqs_events_queue_name],
+            [".", "ApproximateNumberOfMessagesVisible", "QueueName", var.sqs_ai_jobs_queue_name]
+          ]
+          period = 300
+          stat   = "Sum"
+          region = data.aws_region.current.name
+        }
       }
     ]
   })
+}
+
+# ═════════════════════════════════════════════
+# SQS ALARMS
+# ═════════════════════════════════════════════
+
+resource "aws_cloudwatch_metric_alarm" "sqs_ai_jobs_old_messages" {
+  alarm_name          = "${var.project_name}-${var.environment}-sqs-ai-jobs-delay"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 3600 # 1 hora
+  alarm_description   = "Mensagem de IA parada por mais de 1 hora"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    QueueName = var.sqs_ai_jobs_queue_name
+  }
+
+  tags = var.tags
 }
 
 data "aws_region" "current" {}

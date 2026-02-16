@@ -22,6 +22,18 @@ variable "ecs_worker_service_name" {
   type = string
 }
 
+variable "ecs_ia_worker_service_name" {
+  type = string
+}
+
+variable "sqs_events_queue_name" {
+  type = string
+}
+
+variable "sqs_ai_jobs_queue_name" {
+  type = string
+}
+
 variable "rds_instance_id" {
   type = string
 }

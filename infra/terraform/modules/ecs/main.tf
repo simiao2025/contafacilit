@@ -106,6 +106,19 @@ resource "aws_iam_role_policy" "ecs_task_s3" {
           "arn:aws:s3:::${var.project_name}-${var.environment}-*",
           "arn:aws:s3:::${var.project_name}-${var.environment}-*/*"
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = [
+          var.sqs_events_queue_arn,
+          var.sqs_ai_jobs_queue_arn
+        ]
       }
     ]
   })
@@ -127,6 +140,13 @@ resource "aws_cloudwatch_log_group" "worker" {
   tags = var.tags
 }
 
+resource "aws_cloudwatch_log_group" "ia_worker" {
+  name              = "/ecs/${var.project_name}-${var.environment}/ia-worker"
+  retention_in_days = var.environment == "prod" ? 90 : 14
+
+  tags = var.tags
+}
+
 # ─── ALB ─────────────────────────────────────
 
 resource "aws_lb" "main" {
@@ -141,6 +161,11 @@ resource "aws_lb" "main" {
   tags = merge(var.tags, {
     Name = "${var.project_name}-${var.environment}-alb"
   })
+}
+
+resource "aws_wafv2_web_acl_association" "main" {
+  resource_arn = aws_lb.main.arn
+  web_acl_arn  = var.waf_acl_arn
 }
 
 resource "aws_lb_target_group" "api" {
@@ -465,5 +490,103 @@ resource "aws_appautoscaling_policy" "worker_cpu" {
     target_value       = 75.0
     scale_in_cooldown  = 300
     scale_out_cooldown = 60
+  }
+}
+
+# ─── IA Worker Auto Scaling ──────────────────
+
+resource "aws_appautoscaling_target" "ia_worker" {
+  max_capacity       = var.ia_worker_max_count
+  min_capacity       = var.ia_worker_min_count
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.ia_worker.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "ia_worker_cpu" {
+  name               = "${var.project_name}-${var.environment}-ia-worker-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.ia_worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.ia_worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.ia_worker.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 60.0 # IA escala mais cedo
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+
+# ─── IA Worker Task Definition ──────────────
+
+resource "aws_ecs_task_definition" "ia_worker" {
+  family                   = "${var.project_name}-${var.environment}-ia-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.ia_worker_cpu
+  memory                   = var.ia_worker_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "ia-worker"
+      image     = var.ia_worker_image
+      essential = true
+
+      environment = [
+        { name = "NODE_ENV", value = var.environment },
+        { name = "REDIS_URL", value = var.redis_connection_string },
+        { name = "SQS_AI_JOBS_QUEUE_URL", value = "${var.sqs_ai_jobs_queue_arn}" },
+      ]
+
+      secrets = [
+        {
+          name      = "DATABASE_URL"
+          valueFrom = "${var.db_credentials_secret_arn}"
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ia_worker.name
+          "awslogs-region"        = data.aws_region.current.name
+          "awslogs-stream-prefix" = "ia-worker"
+        }
+      }
+    }
+  ])
+
+  tags = var.tags
+}
+
+# ─── IA Worker Service ───────────────────────
+
+resource "aws_ecs_service" "ia_worker" {
+  name            = "${var.project_name}-${var.environment}-ia-worker"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.ia_worker.arn
+  desired_count   = var.ia_worker_desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.ecs_security_group_id]
+    assign_public_ip = false
+  }
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  tags = var.tags
+
+  lifecycle {
+    ignore_changes = [desired_count]
   }
 }

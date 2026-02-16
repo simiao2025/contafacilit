@@ -38,6 +38,18 @@ variable "redis_connection_string" {
   type = string
 }
 
+variable "sqs_events_queue_arn" {
+  type = string
+}
+
+variable "sqs_ai_jobs_queue_arn" {
+  type = string
+}
+
+variable "waf_acl_arn" {
+  type = string
+}
+
 # ─── API Service ─────────────────────────────
 
 variable "api_image" {
@@ -107,6 +119,39 @@ variable "worker_min_count" {
 variable "worker_max_count" {
   type    = number
   default = 5
+}
+
+# ─── IA Worker Service ───────────────────────
+
+variable "ia_worker_image" {
+  description = "Imagem Docker do IA Worker"
+  type        = string
+  default     = "contafacilit/ia-worker:latest"
+}
+
+variable "ia_worker_cpu" {
+  type    = number
+  default = 1024 # IA requer mais CPU
+}
+
+variable "ia_worker_memory" {
+  type    = number
+  default = 2048 # IA requer mais Memória
+}
+
+variable "ia_worker_desired_count" {
+  type    = number
+  default = 1
+}
+
+variable "ia_worker_min_count" {
+  type    = number
+  default = 1
+}
+
+variable "ia_worker_max_count" {
+  type    = number
+  default = 3
 }
 
 variable "tags" {
