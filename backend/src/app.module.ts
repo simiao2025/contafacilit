@@ -4,6 +4,7 @@ import { AuthModule } from './auth/auth.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { TaxEngineModule } from './tax-engine/tax-engine.module';
 import { AIModule } from './ai/ai.module';
+import { ComplianceModule } from './compliance/compliance.module';
 import { LoggerModule } from './common/logger.module';
 import { TraceInterceptor } from './common/interceptors/trace.interceptor';
 import { ConfigModule } from '@nestjs/config';
@@ -25,6 +26,7 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
     IntegrationsModule,
     TaxEngineModule,
     AIModule,
+    ComplianceModule,
   ],
   providers: [
     {

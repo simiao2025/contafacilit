@@ -234,3 +234,68 @@ model AuditLog {
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("audit_logs")
 }
+
+// ─── LGPD Compliance Models ─────────────────────
+
+enum ConsentType {
+  OPEN_FINANCE
+  DATA_PROCESSING
+  MARKETING
+  THIRD_PARTY_SHARING
+}
+
+enum ConsentStatus {
+  GRANTED
+  REVOKED
+}
+
+enum ErasureStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model DataConsent {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  userId         String        @map("user_id") @db.Uuid
+  consentType    ConsentType   @map("consent_type")
+  status         ConsentStatus @default(GRANTED)
+  scope          Json          // Escopo detalhado dos dados consentidos
+  ipAddress      String?       @map("ip_address") @db.Inet
+  userAgent      String?       @map("user_agent") @db.Text
+  grantedAt      DateTime      @default(now()) @map("granted_at")
+  revokedAt      DateTime?     @map("revoked_at")
+  expiresAt      DateTime?     @map("expires_at")
+
+  @@index([organizationId, consentType])
+  @@map("data_consents")
+}
+
+model RetentionPolicy {
+  id             String   @id @default(uuid()) @db.Uuid
+  dataCategory   String   @unique @map("data_category") @db.VarChar(100)
+  retentionDays  Int      @map("retention_days")
+  legalBasis     String   @map("legal_basis") @db.Text
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("retention_policies")
+}
+
+model DataErasureRequest {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  requestedBy    String       @map("requested_by") @db.Uuid
+  status         ErasureStatus @default(PENDING)
+  scope          Json          // Quais dados incluir na exclusão
+  completedAt    DateTime?    @map("completed_at")
+  errorDetails   String?      @map("error_details") @db.Text
+  integrityHash  String?      @map("integrity_hash") @db.Text
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([organizationId])
+  @@map("data_erasure_requests")
+}
