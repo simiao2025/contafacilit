@@ -1,8 +1,9 @@
 # ContaFacilit — Arquitetura de Autenticação e Segurança
 
-> **Versão:** 1.0  
-> **Status:** Design de Segurança Finalizado  
-> **Framework:** NestJS + Passport.js
+> **Versão:** 2.0  
+> **Data:** 2026-02-16  
+> **Status:** Hardened Enterprise Security  
+> **Framework:** NestJS + Passport.js + AES-256-GCM
 
 ---
 
@@ -10,83 +11,62 @@
 
 O sistema utiliza **Refresh Tokens Rotativos** para balancear segurança e experiência do usuário.
 
-### 1.1 Login
-1. O usuário envia `email` e `password`.
-2. O sistema valida o hash (Bcrypt).
-3. Se válido:
-   - Gera um `AccessToken` (Assinado com HS256, expira em 15m).
-   - Gera um `RefreshToken` cryptographically strong (Opaque Token).
-   - Armazena o hash do `RefreshToken` no banco (`refresh_tokens`).
-   - Retorna ambos para o cliente.
-
-### 1.2 Rotação de Refresh Token
-Para mitigar **Replay Attacks**:
-1. O cliente envia o `RefreshToken` antigo.
-2. O sistema verifica se o token existe e não está revogado.
-3. **Estratégia de Detecção de Roubo**:
-   - Se um `RefreshToken` for usado mais de uma vez, o sistema assume que houve um vazamento.
-   - **Ação**: Revoga todos os tokens ativos daquele usuário imediatamente.
-4. Se válido:
-   - Revoga o token antigo (coluna `replaced_by_token_id`).
-   - Gera um novo par de tokens.
+### 1.1 Login e Tokens
+- **AccessToken (JWT):** Expiração estrita de **15 minutos**. Contém `sub` (user_id), `org` (organization_id) e `role`.
+- **RefreshToken (Opaque):** Expiração de **7 dias**. Rotacionado a cada uso.
+- **Detecção de Reuso:** Se um Refresh Token antigo for reutilizado, o sistema invalida **todas** as sessões do usuário imediatamente (Security Event: `TOKEN_REUSE_DETECTED`).
 
 ---
 
-## 2. Multi-tenancy & Contexto
+## 2. Multi-tenancy & Zero Trust
 
-O `AccessToken` carrega o `organization_id` no payload:
-```json
-{
-  "sub": "user_uuid",
-  "org": "org_uuid",
-  "role": "ADMIN",
-  "iat": 1516239022,
-  "exp": 1516240022
-}
-```
+Cada requisição é isolada pelo `organization_id` extraído do JWT.
 
-### 2.1 Tenant Middleware
-Um interceptor ou middleware extrai o `org` do token e o injeta no objeto `Request`. Isso garante que camadas inferiores (Services/Repositories) sempre operem sob o escopo correto.
+### 2.1 Enforcement em 3 Níveis
+1.  **Aplicação (Guards):** O `JwtAuthGuard` valida o token e o `RolesGuard` valida o acesso.
+2.  **Lógica de Negócio (Services):** Todos os filtros de banco de dados utilizam o `org_id` injetado pelo `Request`.
+3.  **Banco de Dados (RLS):** Policies de Row Level Security no PostgreSQL garantem que mesmo em caso de falha na aplicação, os dados não vazem entre tenants.
+
+### 2.2 Proteção contra Privilege Escalation
+- Usuários não podem alterar seu próprio `role` ou `organization_id`.
+- Promoções para `ADMIN` exigem que o solicitante também seja `ADMIN` da mesma organização e o evento é registrado na trilha de segurança.
 
 ---
 
-## 3. Controle de Acesso (RBAC)
+## 3. Criptografia de Dados Sensíveis (AES-256-GCM)
 
-Hierarquia de Permissões:
-| Role | Descrição |
-| :--- | :--- |
-| **ADMIN** | Gestão total da organização, usuários e configurações fiscais. |
-| **CONTADOR** | Realiza lançamentos, apurações e gera relatórios. |
-| **COLABORADOR** | Acesso limitado a visualização e lançamentos básicos. |
+Tokens de integração (Pluggy, Hotmart, etc.) não são armazenados em texto simples.
 
----
-
-## 4. Implementação NestJS (Estrutura Recomendada)
-
-### 4.1 Decorators
-- `@Public()`: Ignora o `JwtAuthGuard`.
-- `@Roles(Role.ADMIN)`: Define permissões necessárias.
-
-### 4.2 Guards
-- `ThrottlerGuard`: Rate limiting para `/auth/login`.
-- `JwtAuthGuard`: Validação de Access Token.
-- `RolesGuard`: Verificação de RBAC via metadados.
+- **Estratégia:** AES-256-GCM (Authenticated Encryption).
+- **Chave:** Derivada de uma Master Key (AWS KMS) + Sal per-tenant.
+- **Local:** Tabela `integrations.credentials_vault_id` agora armazena o payload criptografado se não estiver usando Secrets Manager externo.
 
 ---
 
-## 5. Estratégia de Segurança (Hardening)
+## 4. Auditoria e Eventos de Segurança
 
-1.  **Secrets Management**: Uso de **AWS Secrets Manager** para armazenar `JWT_SECRET` e `REFRESH_SECRET`, injetados via `ConfigService`.
-2.  **HTTPS Only**: Tokens nunca devem trafegar em canais não criptografados.
-3.  **Bcrypt Cost**: Fator de custo (Salt rounds) ajustado para `12` para balancear latência e resistência a brute-force.
-4.  **Audit Trail**: Logs de auditoria para cada login e rotação de token via tabela `audit_logs`.
-5.  **Revogação Ativa**: Capacidade de invalidar sessões remotamente via API administrativa.
+Eventos críticos registrados na tabela `audit_logs`:
+- `AUTH_LOGIN_SUCCESS` / `AUTH_LOGIN_FAILURE`
+- `AUTH_TOKEN_REVOKED`
+- `SECURITY_PRIVILEGE_ESCALATION_ATTEMPT`
+- `INTEGRATION_CREDENTIALS_ACCESS`
 
 ---
 
-## 6. Checklist de Implementação
+## 5. Rate Limiting e Filtros
 
-- [ ] Instalar `@nestjs/jwt`, `@nestjs/passport` e `bcrypt`.
-- [ ] Configurar `JwtStrategy` e `LocalStrategy`.
-- [ ] Implementar `AuthRepository` para persistência de tokens.
-- [ ] Criar `CurrentOrganization` decorator para facilitar acesso ao tenant.
+- **Global Throttler:** Limite de requisições por IP e por User.
+- **Login Throttler:** Proteção agressiva contra brute-force no endpoint `/auth/login`.
+- **Validation Pipes:** Sanitização rigorosa de inputs para prevenir SQL Injection e XSS.
+
+---
+
+## 6. Mapeamento de Roles (RBAC)
+
+| Role | Permissões | Nível de Risco |
+| :--- | :--- | :--- |
+| **ADMIN** | Gestão de Org, Usuários e Faturamento. | Alto |
+| **CONTADOR** | Apurações Fiscais e Conciliação. | Médio |
+| **COLABORADOR** | Visualização e Upload de Documentos. | Baixo |
+
+---

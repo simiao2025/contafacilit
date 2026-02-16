@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../common/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { crypto } from 'crypto';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class AuthService {
@@ -14,7 +14,7 @@ export class AuthService {
     ) { }
 
     async validateUser(email: string, pass: string): Promise<any> {
-        const user = await this.prisma.user.findUnique({ where: { email } });
+        const user = await this.prisma.user.findUnique({ where: { email, deletedAt: null } } as any);
         if (user && await bcrypt.compare(pass, user.passwordHash)) {
             const { passwordHash, ...result } = user;
             return result;
@@ -32,6 +32,16 @@ export class AuthService {
         const accessToken = this.jwtService.sign(payload);
         const refreshToken = await this.generateRefreshToken(user.id);
 
+        // Registro de auditoria de login
+        await this.prisma.auditLog.create({
+            data: {
+                organizationId: user.organizationId,
+                userId: user.id,
+                event: 'AUTH_LOGIN_SUCCESS',
+                newData: { role: user.role },
+            } as any
+        });
+
         return {
             access_token: accessToken,
             refresh_token: refreshToken,
@@ -39,11 +49,10 @@ export class AuthService {
     }
 
     async generateRefreshToken(userId: string): Promise<string> {
-        const token = require('crypto').randomBytes(40).toString('hex');
+        const token = crypto.randomBytes(40).toString('hex');
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + 7); // 7 dias
 
-        // Hash do token para salvar no banco
         const tokenHash = await bcrypt.hash(token, 10);
 
         await this.prisma.refreshToken.create({
@@ -58,8 +67,8 @@ export class AuthService {
     }
 
     async refresh(refreshToken: string) {
+        // Busca todos os tokens (incluindo revogados) para detectar reuso malicioso
         const allTokens = await this.prisma.refreshToken.findMany({
-            where: { isRevoked: false, expiresAt: { gt: new Date() } },
             include: { user: true },
         });
 
@@ -72,9 +81,34 @@ export class AuthService {
         }
 
         if (!foundToken) {
-            throw new UnauthorizedException('Invalid or expired refresh token');
+            throw new UnauthorizedException('Invalid refresh token');
         }
 
+        // DETECÇÃO DE ROUBO DE TOKEN: Se o token já foi revogado, revoga TUDO do usuário
+        if (foundToken.isRevoked) {
+            await this.prisma.refreshToken.updateMany({
+                where: { userId: foundToken.userId },
+                data: { isRevoked: true },
+            });
+
+            await this.prisma.auditLog.create({
+                data: {
+                    organizationId: foundToken.user.organizationId,
+                    userId: foundToken.userId,
+                    event: 'SECURITY_TOKEN_REUSE_DETECTED',
+                    oldData: { tokenId: foundToken.id },
+                } as any
+            });
+
+            throw new ForbiddenException('Security breach detected. Sessions invalidated.');
+        }
+
+        // Verifica expiração
+        if (new Date() > foundToken.expiresAt) {
+            throw new UnauthorizedException('Expired refresh token');
+        }
+
+        // Rotação: Revoga o atual e cria um novo
         await this.prisma.refreshToken.update({
             where: { id: foundToken.id },
             data: { isRevoked: true },
@@ -83,9 +117,9 @@ export class AuthService {
         return this.login(foundToken.user);
     }
 
-    async logout(refreshToken: string) {
+    async logout(refreshToken: string, userId: string) {
         const allTokens = await this.prisma.refreshToken.findMany({
-            where: { isRevoked: false },
+            where: { userId, isRevoked: false },
         });
 
         for (const t of allTokens) {
@@ -96,6 +130,17 @@ export class AuthService {
                 });
                 break;
             }
+        }
+
+        const user = await this.prisma.user.findUnique({ where: { id: userId } });
+        if (user) {
+            await this.prisma.auditLog.create({
+                data: {
+                    organizationId: user.organizationId,
+                    userId: userId,
+                    event: 'AUTH_LOGOUT',
+                } as any
+            });
         }
     }
 }
