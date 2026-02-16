@@ -425,9 +425,9 @@ resource "aws_appautoscaling_policy" "api_cpu" {
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
-    target_value       = 70.0
+    target_value       = 60.0 # Mais agressivo que 70%
     scale_in_cooldown  = 300
-    scale_out_cooldown = 60
+    scale_out_cooldown = 30 # Scale out em 30 segundos
   }
 }
 
@@ -442,9 +442,9 @@ resource "aws_appautoscaling_policy" "api_memory" {
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageMemoryUtilization"
     }
-    target_value       = 80.0
+    target_value       = 70.0 # Mais agressivo que 80%
     scale_in_cooldown  = 300
-    scale_out_cooldown = 60
+    scale_out_cooldown = 30
   }
 }
 
@@ -460,9 +460,9 @@ resource "aws_appautoscaling_policy" "api_requests" {
       predefined_metric_type = "ALBRequestCountPerTarget"
       resource_label         = "${aws_lb.main.arn_suffix}/${aws_lb_target_group.api.arn_suffix}"
     }
-    target_value       = 1000.0
+    target_value       = 500.0 # Escala mais cedo (metade do anterior)
     scale_in_cooldown  = 300
-    scale_out_cooldown = 60
+    scale_out_cooldown = 30
   }
 }
 
@@ -487,10 +487,58 @@ resource "aws_appautoscaling_policy" "worker_cpu" {
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
-    target_value       = 75.0
+    target_value       = 65.0
     scale_in_cooldown  = 300
-    scale_out_cooldown = 60
+    scale_out_cooldown = 30
   }
+}
+
+# ─── Worker SQS Backlog Scaling ─────────────
+
+resource "aws_appautoscaling_policy" "worker_sqs" {
+  name               = "${var.project_name}-${var.environment}-worker-sqs-scaling"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 60
+    metric_aggregation_type = "Average"
+
+    step_adjustment {
+      metric_interval_lower_bound = 0
+      metric_interval_upper_bound = 100
+      scaling_adjustment          = 0
+    }
+    step_adjustment {
+      metric_interval_lower_bound = 100
+      metric_interval_upper_bound = 500
+      scaling_adjustment          = 1
+    }
+    step_adjustment {
+      metric_interval_lower_bound = 500
+      scaling_adjustment          = 3
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_sqs_backlog" {
+  alarm_name          = "${var.project_name}-${var.environment}-worker-sqs-backlog"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = "60"
+  statistic           = "Average"
+  threshold           = "100"
+
+  dimensions = {
+    QueueName = var.sqs_events_queue_name
+  }
+
+  alarm_actions = [aws_appautoscaling_policy.worker_sqs.arn]
 }
 
 # ─── IA Worker Auto Scaling ──────────────────
@@ -514,10 +562,58 @@ resource "aws_appautoscaling_policy" "ia_worker_cpu" {
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
-    target_value       = 60.0 # IA escala mais cedo
+    target_value       = 50.0 # IA escala muito cedo
     scale_in_cooldown  = 300
-    scale_out_cooldown = 60
+    scale_out_cooldown = 30
   }
+}
+
+# ─── IA Worker SQS Backlog Scaling ──────────
+
+resource "aws_appautoscaling_policy" "ia_worker_sqs" {
+  name               = "${var.project_name}-${var.environment}-ia-worker-sqs-scaling"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.ia_worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.ia_worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.ia_worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 30 # IA escala ainda mais rápido
+    metric_aggregation_type = "Average"
+
+    step_adjustment {
+      metric_interval_lower_bound = 0
+      metric_interval_upper_bound = 10
+      scaling_adjustment          = 0
+    }
+    step_adjustment {
+      metric_interval_lower_bound = 10
+      metric_interval_upper_bound = 50
+      scaling_adjustment          = 2
+    }
+    step_adjustment {
+      metric_interval_lower_bound = 50
+      scaling_adjustment          = 5
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "ia_worker_sqs_backlog" {
+  alarm_name          = "${var.project_name}-${var.environment}-ia-worker-sqs-backlog"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = "60"
+  statistic           = "Average"
+  threshold           = "10"
+
+  dimensions = {
+    QueueName = var.sqs_ai_jobs_queue_name
+  }
+
+  alarm_actions = [aws_appautoscaling_policy.ia_worker_sqs.arn]
 }
 
 # ─── IA Worker Task Definition ──────────────

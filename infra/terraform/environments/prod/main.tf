@@ -161,7 +161,9 @@ module "ecs" {
   db_credentials_secret_arn = module.rds.db_credentials_secret_arn
   redis_connection_string   = module.elasticache.redis_connection_string
   sqs_events_queue_arn      = module.sqs.events_queue_arn
+  sqs_events_queue_name     = module.sqs.events_queue_name
   sqs_ai_jobs_queue_arn     = module.sqs.ai_jobs_queue_arn
+  sqs_ai_jobs_queue_name     = module.sqs.ai_jobs_queue_name
   waf_acl_arn               = module.waf.waf_acl_arn
 
   # Prod: dimensionado para 10.000 clientes

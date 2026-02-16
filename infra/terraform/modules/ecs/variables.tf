@@ -42,7 +42,15 @@ variable "sqs_events_queue_arn" {
   type = string
 }
 
+variable "sqs_events_queue_name" {
+  type = string
+}
+
 variable "sqs_ai_jobs_queue_arn" {
+  type = string
+}
+
+variable "sqs_ai_jobs_queue_name" {
   type = string
 }
 
