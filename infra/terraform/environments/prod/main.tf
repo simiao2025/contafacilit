@@ -96,12 +96,12 @@ module "rds" {
   private_subnet_ids = module.vpc.private_subnet_ids
   security_group_id  = module.security.rds_security_group_id
 
-  # Prod: dimensionado para 10.000 clientes
+  # Prod: dimensionado para 10.000 clientes - Disaster Recovery Grade
   instance_class          = "db.r6g.large"   # 2 vCPU, 16 GB RAM
   allocated_storage       = 100
   max_allocated_storage   = 500
   multi_az                = true
-  backup_retention_period = 14
+  backup_retention_period = 35 # Retenção máxima para PITR
 
   tags = local.tags
 }

@@ -100,7 +100,7 @@ module "rds" {
   allocated_storage       = 30
   max_allocated_storage   = 100
   multi_az                = true
-  backup_retention_period = 3
+  backup_retention_period = 30 # Aumentado para suportar testes de restore mensais
 
   tags = local.tags
 }
