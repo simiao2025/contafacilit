@@ -1,236 +1,185 @@
-# ContaFacilit — Modelagem de Banco de Dados
+# ContaFacilit — Modelagem de Banco de Dados (SaaS Financeiro)
 
-> **Versão:** 1.0  
+> **Versão:** 3.0  
 > **Data:** 2026-02-16  
-> **Status:** Produção-Ready  
-> **Engine:** PostgreSQL 16+
+> **Especialidade:** Performance PostgreSQL para SaaS Multi-tenant  
+> **Capacidades:** pgvector, Soft Delete, RBT12 Sliding Windows
 
 ---
 
-## 1. Estratégia de Multi-tenancy
+## 1. Contexto Multi-tenancy & pgvector
 
-O sistema utiliza a estratégia de **Shared Database com Discriminador de Coluna**.
-- Todas as tabelas relacionadas a dados de clientes possuem a coluna `organization_id`.
-- O isolamento deve ser reforçado na camada de aplicação e, opcionalmente, via PostgreSQL **Row Level Security (RLS)**.
-
----
-
-## 2. Tipos Enumerate (Enums)
+- **Isolamento:** Uso obrigatório de `organization_id` em tabelas de dados de clientes.
+- **pgvector:** Suporte nativo para embeddings de mensagens da IA para busca semântica.
 
 ```sql
-DO $$ 
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'organization_status') THEN
-        CREATE TYPE organization_status AS ENUM ('ACTIVE', 'SUSPENDED', 'CANCELLED');
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'anexo_simples') THEN
-        CREATE TYPE anexo_simples AS ENUM ('I', 'II', 'III', 'IV', 'V');
-    END IF;
-
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'calculation_status') THEN
-        CREATE TYPE calculation_status AS ENUM ('DRAFT', 'CALCULATED', 'FINALIZED');
-    END IF;
-
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'revenue_status') THEN
-        CREATE TYPE revenue_status AS ENUM ('PENDING', 'VALIDATED', 'LOCKED');
-    END IF;
-
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
-        CREATE TYPE user_role AS ENUM ('ADMIN', 'CONTADOR', 'COLABORADOR');
-    END IF;
-END $$;
+-- Extensões Necessárias
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "vector"; -- Requer AWS RDS pgvector habilitado
 ```
 
 ---
 
-## 3. Esquema de Tabelas
-
-### 3.1 Organizations & Users
+## 2. Tipos de Domínio (Enums)
 
 ```sql
+CREATE TYPE user_role AS ENUM ('ADMIN', 'CONTADOR', 'COLABORADOR');
+CREATE TYPE org_status AS ENUM ('ACTIVE', 'SUSPENDED', 'CANCELLED');
+CREATE TYPE tax_anexo AS ENUM ('I', 'II', 'III', 'IV', 'V');
+CREATE TYPE calc_status AS ENUM ('DRAFT', 'CALCULATED', 'FINALIZED');
+CREATE TYPE bank_acc_type AS ENUM ('CHECKING', 'SAVINGS', 'PAYMENT');
+CREATE TYPE integration_provider AS ENUM ('PLUGGY', 'BELVO', 'HOTMART', 'KIWIFY', 'EDUZZ');
+```
+
+---
+
+## 3. Esquema de Tabelas (Sessão por Módulo)
+
+### 3.1 Núcleo e Identidade
+```sql
 CREATE TABLE organizations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     cnpj CHAR(14) NOT NULL UNIQUE,
     razao_social VARCHAR(255) NOT NULL,
-    nome_fantasia VARCHAR(255),
-    data_abertura DATE NOT NULL,
-    anexo_padrao anexo_simples NOT NULL DEFAULT 'III',
-    fator_r_aplicavel BOOLEAN NOT NULL DEFAULT FALSE,
-    status organization_status NOT NULL DEFAULT 'ACTIVE',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    status org_status NOT NULL DEFAULT 'ACTIVE',
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    email VARCHAR(255) NOT NULL UNIQUE,
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id),
+    email VARCHAR(255) NOT NULL,
     password_hash TEXT NOT NULL,
-    full_name VARCHAR(255) NOT NULL,
     role user_role NOT NULL DEFAULT 'COLABORADOR',
-    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    CONSTRAINT uq_user_email_org UNIQUE(email, organization_id) -- Permite mesmo email em orgs diferentes se necessário
 );
-
-CREATE INDEX idx_users_org ON users(organization_id);
-
-CREATE TABLE refresh_tokens (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash TEXT NOT NULL UNIQUE,
-    expires_at TIMESTAMPTZ NOT NULL,
-    is_revoked BOOLEAN NOT NULL DEFAULT FALSE,
-    replaced_by_token_id UUID REFERENCES refresh_tokens(id), -- Para auditoria de rotação
-    user_agent TEXT,
-    ip_address INET,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
-CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token_hash);
 ```
 
-### 3.2 Motor Versions (Metadados Tributários)
+### 3.2 Financeiro e Integrações
+```sql
+CREATE TABLE bank_accounts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id),
+    provider_id TEXT NOT NULL, -- ID no Pluggy/Belvo
+    account_name TEXT NOT NULL,
+    account_type bank_acc_type NOT NULL,
+    balance NUMERIC(15, 2) NOT NULL DEFAULT 0,
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
+CREATE TABLE bank_transactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id),
+    bank_account_id UUID NOT NULL REFERENCES bank_accounts(id),
+    external_id TEXT UNIQUE, -- ID da transação no banco original
+    amount NUMERIC(15, 2) NOT NULL,
+    description TEXT,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE integrations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id),
+    provider integration_provider NOT NULL,
+    credentials_vault_id TEXT NOT NULL, -- ID no AWS Secrets Manager para o token
+    is_active BOOLEAN DEFAULT TRUE,
+    last_sync_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    UNIQUE(organization_id, provider)
+);
+```
+
+### 3.3 Fiscal (Motor & Receitas)
 ```sql
 CREATE TABLE motor_versions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    version_tag VARCHAR(50) NOT NULL UNIQUE, -- e.g., '2026.1.0'
-    config_json JSONB NOT NULL, -- Contém as faixas e alíquotas por anexo
-    vigencia_inicio DATE NOT NULL,
-    vigencia_fim DATE,
-    changelog TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    version_tag VARCHAR(50) NOT NULL UNIQUE,
+    config JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_motor_vigencia ON motor_versions(vigencia_inicio) WHERE vigencia_fim IS NULL;
-```
-
-### 3.3 Revenues (Receitas Brutas)
-
-```sql
 CREATE TABLE revenues (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     organization_id UUID NOT NULL REFERENCES organizations(id),
-    competencia CHAR(7) NOT NULL, -- Formato 'YYYY-MM'
-    data_recebimento DATE NOT NULL,
-    valor_bruto NUMERIC(15, 2) NOT NULL CHECK (valor_bruto > 0),
-    descricao VARCHAR(500),
-    origem VARCHAR(100),
-    status revenue_status NOT NULL DEFAULT 'PENDING',
-    deleted_at TIMESTAMPTZ, -- Soft delete
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    competencia CHAR(7) NOT NULL, -- YYYY-MM
+    amount NUMERIC(15, 2) NOT NULL,
+    source integration_provider,
+    occurred_at DATE NOT NULL,
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Índices Críticos para RBT12
-CREATE INDEX idx_revenues_rbt12 ON revenues (organization_id, competencia) 
+-- ÍNDICE CRÍTICO PARA RBT12 (Sliding Window 12m)
+CREATE INDEX idx_revenues_sliding_window ON revenues (organization_id, occurred_at) 
 WHERE deleted_at IS NULL;
 
-CREATE INDEX idx_revenues_org_status ON revenues(organization_id, status);
-```
-
-### 3.4 Tax Calculations (Apurações)
-
-```sql
 CREATE TABLE tax_calculations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     organization_id UUID NOT NULL REFERENCES organizations(id),
     motor_version_id UUID NOT NULL REFERENCES motor_versions(id),
     competencia CHAR(7) NOT NULL,
+    amount_rbt12 NUMERIC(15, 2) NOT NULL,
+    tax_amount NUMERIC(15, 2) NOT NULL,
+    status calc_status DEFAULT 'DRAFT',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
     
-    -- Inputs (Snapshots)
-    receita_bruta_mes NUMERIC(15, 2) NOT NULL,
-    rbt12_calculado NUMERIC(15, 2) NOT NULL,
-    fator_r_calculado NUMERIC(5, 4),
-    anexo_aplicado anexo_simples NOT NULL,
-    
-    -- Outputs
-    faixa_enquadrada INTEGER NOT NULL CHECK (faixa_enquadrada BETWEEN 1 AND 6),
-    aliquota_nominal NUMERIC(6, 4) NOT NULL,
-    parcela_deduzir NUMERIC(15, 2) NOT NULL,
-    aliquota_efetiva NUMERIC(6, 4) NOT NULL,
-    valor_das NUMERIC(15, 2) NOT NULL,
-    
-    status calculation_status NOT NULL DEFAULT 'DRAFT',
-    finalized_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    -- Garantia de Apuração Única por Mês
-    CONSTRAINT uq_tax_calc_month UNIQUE (organization_id, competencia)
+    CONSTRAINT uq_tax_calc_org_month UNIQUE(organization_id, competencia)
 );
-
-CREATE INDEX idx_tax_calc_org_status ON tax_calculations(organization_id, status);
 ```
 
-### 3.5 Audit Logs
+### 3.4 Inteligência Artificial (pgvector)
+```sql
+CREATE TABLE ai_conversations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    title TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
+CREATE TABLE ai_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    conversation_id UUID NOT NULL REFERENCES ai_conversations(id),
+    role TEXT NOT NULL, -- 'user' or 'assistant'
+    content TEXT NOT NULL,
+    embedding vector(1536), -- Vector dim 1536 para OpenAI/titile embeddings
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_ai_messages_embedding ON ai_messages USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+```
+
+### 3.5 Auditoria
 ```sql
 CREATE TABLE audit_logs (
     id BIGSERIAL PRIMARY KEY,
     organization_id UUID NOT NULL REFERENCES organizations(id),
     user_id UUID REFERENCES users(id),
-    action VARCHAR(100) NOT NULL, -- e.g., 'CALCULATION_FINALIZED'
-    target_table VARCHAR(100) NOT NULL,
-    target_id UUID NOT NULL,
-    data_before JSONB,
-    data_after JSONB,
-    request_ip INET,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    event TEXT NOT NULL,
+    old_data JSONB,
+    new_data JSONB,
+    ip_address INET,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_audit_org_created ON audit_logs(organization_id, created_at DESC);
+CREATE INDEX idx_audit_logs_tenant ON audit_logs (organization_id, created_at DESC);
 ```
 
 ---
 
-## 4. Estratégia de Performance para RBT12
+## 4. Otimizações de Escalabilidade (10k+ Clientes)
 
-O cálculo do RBT12 exige somar as receitas dos últimos 12 meses. Para 10.000 clientes, isso pode ser custoso se feito de forma ingênua.
-
-### 4.1 Indexação Baseada em Range
-O índice `idx_revenues_rbt12` permite que o banco localize rapidamente as receitas de uma empresa em um intervalo de meses.
-
-```sql
--- Exemplo de query otimizada para RBT12
-SELECT SUM(valor_bruto) 
-FROM revenues 
-WHERE organization_id = $1 
-  AND deleted_at IS NULL 
-  AND competencia < '2026-02' 
-  AND competencia >= '2025-02';
-```
-
-### 4.2 Materialização (Cache)
-Para a V1, o valor do RBT12 é persistido na tabela `tax_calculations` assim que o cálculo é realizado. Isso evita re-processamento em cada visualização do dashboard.
+1.  **Partial Indexes:** Uso de `WHERE deleted_at IS NULL` em todos os índices de busca para manter performance com soft delete.
+2.  **Constraint Isolation:** Todas as constraints `UNIQUE` e de `FK` incluem o `organization_id` ou garantem o vínculo claro com o tenant.
+3.  **JSONB for Flexibility:** `motor_versions.config` e `audit_logs.data` usam JSONB para evolução de esquema sem migrations bloqueantes.
 
 ---
-
-## 5. Escalabilidade e Segurança
-
-### 5.1 Partitioning (Futuro)
-Se a tabela `revenues` ou `audit_logs` crescer demais (ex: milhões de linhas), pode-se implementar **Table Partitioning por Range de Data** ou por `organization_id` (Hash).
-
-### 5.2 Row Level Security (RLS)
-Recomenda-se ativar RLS para garantir que um cliente nunca veja os dados de outro, mesmo em caso de bug na aplicação.
-
-```sql
-ALTER TABLE revenues ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY tenant_isolation_policy ON revenues
-USING (organization_id = current_setting('app.current_organization_id')::UUID);
-```
-
-### 5.3 Vacuum & Analyze
-Configuração de **Autovacuum** agressivo é fundamental em sistemas fiscais devido a alta taxa de inserção/deleção temporal.
-
----
-
-## 6. Constraints de Integridade (Checklist)
-
-- [x] `NUMERIC` para precisão decimal (evita erros de ponto flutuante).
-- [x] `UNIQUE (organization_id, competencia)` para evitar duplicidade de impostos no mesmo mês.
-- [x] `CHECK (valor_bruto > 0)` para garantir consistência fiscal básica.
-- [x] `REFERENCES` com chaves estrangeiras para integridade referencial.
-- [x] `TIMESTAMPTZ` para lidar corretamente com fusos horários brasileiros (Brasília).

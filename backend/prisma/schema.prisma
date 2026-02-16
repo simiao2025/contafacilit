@@ -16,6 +16,12 @@ enum OrganizationStatus {
   CANCELLED
 }
 
+enum UserRole {
+  ADMIN
+  CONTADOR
+  COLABORADOR
+}
+
 enum AnexoSimples {
   I
   II
@@ -30,32 +36,36 @@ enum CalculationStatus {
   FINALIZED
 }
 
-enum RevenueStatus {
-  PENDING
-  VALIDATED
-  LOCKED
+enum BankAccountType {
+  CHECKING
+  SAVINGS
+  PAYMENT
 }
 
-enum UserRole {
-  ADMIN
-  CONTADOR
-  COLABORADOR
+enum IntegrationProvider {
+  PLUGGY
+  BELVO
+  HOTMART
+  KIWIFY
+  EDUZZ
 }
 
 model Organization {
-  id               String             @id @default(uuid()) @db.Uuid
-  cnpj             String             @unique @db.Char(14)
-  razaoSocial      String             @map("razao_social") @db.VarChar(255)
-  nomeFantasia     String?            @map("nome_fantasia") @db.VarChar(255)
-  dataAbertura     DateTime           @map("data_abertura") @db.Date
-  anexoPadrao      AnexoSimples       @default(III) @map("anexo_padrao")
-  fatorRAplicavel  Boolean            @default(false) @map("fator_r_aplicavel")
-  status           OrganizationStatus @default(ACTIVE)
-  createdAt        DateTime           @default(now()) @map("created_at")
-  updatedAt        DateTime           @updatedAt @map("updated_at")
+  id              String             @id @default(uuid()) @db.Uuid
+  cnpj            String             @unique @db.Char(14)
+  razaoSocial     String             @map("razao_social") @db.VarChar(255)
+  status          OrganizationStatus @default(ACTIVE) @map("status")
+  deletedAt       DateTime?          @map("deleted_at")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
   users            User[]
+  bankAccounts     BankAccount[]
+  bankTransactions BankTransaction[]
+  integrations     Integration[]
   revenues         Revenue[]
-  taxCalculations TaxCalculation[]
+  taxCalculations  TaxCalculation[]
+  aiConversations  AIConversation[]
   auditLogs        AuditLog[]
 
   @@map("organizations")
@@ -64,87 +74,149 @@ model Organization {
 model User {
   id             String         @id @default(uuid()) @db.Uuid
   organizationId String         @map("organization_id") @db.Uuid
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  email          String         @unique @db.VarChar(255)
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  email          String         @db.VarChar(255)
   passwordHash   String         @map("password_hash") @db.Text
-  fullName       String         @map("full_name") @db.VarChar(255)
   role           UserRole       @default(COLABORADOR)
-  isAdmin        Boolean        @default(false) @map("is_admin")
+  deletedAt      DateTime?      @map("deleted_at")
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
+  
   refreshTokens  RefreshToken[]
+  aiConversations AIConversation[]
   auditLogs      AuditLog[]
 
+  @@unique([email, organizationId])
   @@map("users")
 }
 
 model RefreshToken {
-  id                 String        @id @default(uuid()) @db.Uuid
-  userId             String        @map("user_id") @db.Uuid
-  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash          String        @unique @map("token_hash") @db.Text
-  expiresAt          DateTime      @map("expires_at")
-  isRevoked          Boolean       @default(false) @map("is_revoked")
-  replacedByTokenId  String?       @map("replaced_by_token_id") @db.Uuid
-  userAgent          String?       @map("user_agent") @db.Text
-  ipAddress          String?       @map("ip_address") @db.Inet
-  createdAt          DateTime      @default(now()) @map("created_at")
+  id                 String    @id @default(uuid()) @db.Uuid
+  userId             String    @map("user_id") @db.Uuid
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash          String    @unique @map("token_hash") @db.Text
+  expiresAt          DateTime  @map("expires_at")
+  isRevoked          Boolean   @default(false) @map("is_revoked")
+  replacedByTokenId  String?   @map("replaced_by_token_id") @db.Uuid
+  userAgent          String?   @map("user_agent") @db.Text
+  ipAddress          String?   @map("ip_address") @db.Inet
+  createdAt          DateTime  @default(now()) @map("created_at")
 
   @@map("refresh_tokens")
 }
 
+model BankAccount {
+  id             String          @id @default(uuid()) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  providerId     String          @map("provider_id")
+  accountName    String          @map("account_name")
+  accountType    BankAccountType @map("account_type")
+  balance        Decimal         @default(0) @db.Decimal(15, 2)
+  deletedAt      DateTime?       @map("deleted_at")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  
+  transactions   BankTransaction[]
+
+  @@map("bank_accounts")
+}
+
+model BankTransaction {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  bankAccountId  String       @map("bank_account_id") @db.Uuid
+  bankAccount    BankAccount  @relation(fields: [bankAccountId], references: [id])
+  externalId     String?      @unique @map("external_id")
+  amount         Decimal      @db.Decimal(15, 2)
+  description    String?      @db.Text
+  occurredAt     DateTime     @map("occurred_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@map("bank_transactions")
+}
+
+model Integration {
+  id                  String              @id @default(uuid()) @db.Uuid
+  organizationId      String              @map("organization_id") @db.Uuid
+  organization        Organization        @relation(fields: [organizationId], references: [id])
+  provider            IntegrationProvider
+  credentialsVaultId  String              @map("credentials_vault_id")
+  isActive            Boolean             @default(true) @map("is_active")
+  lastSyncAt          DateTime?           @map("last_sync_at")
+  createdAt           DateTime            @default(now()) @map("created_at")
+
+  @@unique([organizationId, provider])
+  @@map("integrations")
+}
+
 model MotorVersion {
-  id               String            @id @default(uuid()) @db.Uuid
-  versionTag       String            @unique @map("version_tag") @db.VarChar(50)
-  configJson       Json              @map("config_json")
-  vigenciaInicio   DateTime          @map("vigencia_inicio") @db.Date
-  vigenciaFim      DateTime?         @map("vigencia_fim") @db.Date
-  changelog        String?           @db.Text
-  createdAt        DateTime          @default(now()) @map("created_at")
+  id              String           @id @default(uuid()) @db.Uuid
+  versionTag      String           @unique @map("version_tag") @db.VarChar(50)
+  config          Json
+  createdAt       DateTime         @default(now()) @map("created_at")
   taxCalculations TaxCalculation[]
 
   @@map("motor_versions")
 }
 
 model Revenue {
-  id              String        @id @default(uuid()) @db.Uuid
-  organizationId  String        @map("organization_id") @db.Uuid
-  organization    Organization  @relation(fields: [organizationId], references: [id])
-  competencia     String        @db.Char(7)
-  dataRecebimento DateTime      @map("data_recebimento") @db.Date
-  valorBruto      Decimal       @map("valor_bruto") @db.Decimal(15, 2)
-  descricao       String?       @db.VarChar(500)
-  origem          String?       @db.VarChar(100)
-  status          RevenueStatus @default(PENDING)
-  deletedAt       DateTime?     @map("deleted_at")
-  createdAt       DateTime      @default(now()) @map("created_at")
+  id             String               @id @default(uuid()) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  organization   Organization         @relation(fields: [organizationId], references: [id])
+  competencia    String               @db.Char(7)
+  amount         Decimal              @db.Decimal(15, 2)
+  source         IntegrationProvider?
+  occurredAt     DateTime             @map("occurred_at") @db.Date
+  deletedAt      DateTime?            @map("deleted_at")
+  createdAt      DateTime             @default(now()) @map("created_at")
 
-  @@index([organizationId, competencia])
+  @@index([organizationId, occurredAt])
   @@map("revenues")
 }
 
 model TaxCalculation {
-  id               String            @id @default(uuid()) @db.Uuid
-  organizationId   String            @map("organization_id") @db.Uuid
-  organization     Organization      @relation(fields: [organizationId], references: [id])
-  motorVersionId   String            @map("motor_version_id") @db.Uuid
-  motorVersion     MotorVersion      @relation(fields: [motorVersionId], references: [id])
-  competencia      String            @db.Char(7)
-  receitaBrutaMes  Decimal           @map("receita_bruta_mes") @db.Decimal(15, 2)
-  rbt12Calculado   Decimal           @map("rbt12_calculado") @db.Decimal(15, 2)
-  fatorRCalculado  Decimal?          @map("fator_r_calculado") @db.Decimal(5, 4)
-  anexoAplicado    AnexoSimples      @map("anexo_aplicado")
-  faixaEnquadrada  Int               @map("faixa_enquadrada")
-  aliquotaNominal  Decimal           @map("aliquota_nominal") @db.Decimal(6, 4)
-  parcelaDeduzir   Decimal           @map("parcela_deduzir") @db.Decimal(15, 2)
-  aliquotaEfetiva  Decimal           @map("aliquota_efetiva") @db.Decimal(6, 4)
-  valorDas         Decimal           @map("valor_das") @db.Decimal(15, 2)
-  status           CalculationStatus @default(DRAFT)
-  finalizedAt      DateTime?         @map("finalized_at")
-  createdAt        DateTime          @default(now()) @map("created_at")
+  id             String            @id @default(uuid()) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  motorVersionId String            @map("motor_version_id") @db.Uuid
+  motorVersion   MotorVersion      @relation(fields: [motorVersionId], references: [id])
+  competencia    String            @db.Char(7)
+  amountRbt12    Decimal           @map("amount_rbt12") @db.Decimal(15, 2)
+  taxAmount      Decimal           @map("tax_amount") @db.Decimal(15, 2)
+  status         CalculationStatus @default(DRAFT)
+  createdAt      DateTime          @default(now()) @map("created_at")
 
-  @@unique([organizationId, competencia], name: "uq_tax_calc_month")
+  @@unique([organizationId, competencia])
   @@map("tax_calculations")
+}
+
+model AIConversation {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  userId         String       @map("user_id") @db.Uuid
+  user           User         @relation(fields: [userId], references: [id])
+  title          String?
+  createdAt      DateTime     @default(now()) @map("created_at")
+  
+  messages       AIMessage[]
+
+  @@map("ai_conversations")
+}
+
+model AIMessage {
+  id             String         @id @default(uuid()) @db.Uuid
+  conversationId String         @map("conversation_id") @db.Uuid
+  conversation   AIConversation @relation(fields: [conversationId], references: [id])
+  role           String
+  content        String         @db.Text
+  // Prisma não suporta o tipo `vector` diretamente de forma nativa para queries de busca,
+  // mas podemos definir o tipo no banco. Para o Prisma Client, lidamos como Unsupported.
+  embedding      Unsupported("vector(1536)")?
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  @@map("ai_messages")
 }
 
 model AuditLog {
@@ -153,12 +225,10 @@ model AuditLog {
   organization   Organization @relation(fields: [organizationId], references: [id])
   userId         String?      @map("user_id") @db.Uuid
   user           User?        @relation(fields: [userId], references: [id])
-  action         String       @db.VarChar(100)
-  targetTable    String       @map("target_table") @db.VarChar(100)
-  targetId       String       @map("target_id") @db.Uuid
-  dataBefore     Json?        @map("data_before")
-  dataAfter      Json?        @map("data_after")
-  requestIp      String?      @map("request_ip") @db.Inet
+  event          String
+  oldData        Json?        @map("old_data")
+  newData        Json?        @map("new_data")
+  ipAddress      String?      @map("ip_address") @db.Inet
   createdAt      DateTime     @default(now()) @map("created_at")
 
   @@index([organizationId, createdAt(sort: Desc)])
