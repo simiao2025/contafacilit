@@ -12,13 +12,13 @@ export class IntegrationsService {
     ) { }
 
     async getActiveIntegrations(organizationId: string) {
-        return this.prisma.integration.findMany({
+        return (this.prisma as any).integration.findMany({
             where: { organizationId, isActive: true },
         });
     }
 
     async getDecryptedCredentials(integrationId: string, organizationId: string) {
-        const integration = await this.prisma.integration.findUnique({
+        const integration = await (this.prisma as any).integration.findUnique({
             where: { id: integrationId },
         });
 
