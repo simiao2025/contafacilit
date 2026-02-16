@@ -1,0 +1,166 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum AnexoSimples {
+  I
+  II
+  III
+  IV
+  V
+}
+
+enum CalculationStatus {
+  DRAFT
+  CALCULATED
+  FINALIZED
+}
+
+enum RevenueStatus {
+  PENDING
+  VALIDATED
+  LOCKED
+}
+
+enum UserRole {
+  ADMIN
+  CONTADOR
+  COLABORADOR
+}
+
+model Organization {
+  id               String             @id @default(uuid()) @db.Uuid
+  cnpj             String             @unique @db.Char(14)
+  razaoSocial      String             @map("razao_social") @db.VarChar(255)
+  nomeFantasia     String?            @map("nome_fantasia") @db.VarChar(255)
+  dataAbertura     DateTime           @map("data_abertura") @db.Date
+  anexoPadrao      AnexoSimples       @default(III) @map("anexo_padrao")
+  fatorRAplicavel  Boolean            @default(false) @map("fator_r_aplicavel")
+  status           OrganizationStatus @default(ACTIVE)
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+  users            User[]
+  revenues         Revenue[]
+  taxCalculations TaxCalculation[]
+  auditLogs        AuditLog[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String         @unique @db.VarChar(255)
+  passwordHash   String         @map("password_hash") @db.Text
+  fullName       String         @map("full_name") @db.VarChar(255)
+  role           UserRole       @default(COLABORADOR)
+  isAdmin        Boolean        @default(false) @map("is_admin")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  refreshTokens  RefreshToken[]
+  auditLogs      AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id                 String        @id @default(uuid()) @db.Uuid
+  userId             String        @map("user_id") @db.Uuid
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash          String        @unique @map("token_hash") @db.Text
+  expiresAt          DateTime      @map("expires_at")
+  isRevoked          Boolean       @default(false) @map("is_revoked")
+  replacedByTokenId  String?       @map("replaced_by_token_id") @db.Uuid
+  userAgent          String?       @map("user_agent") @db.Text
+  ipAddress          String?       @map("ip_address") @db.Inet
+  createdAt          DateTime      @default(now()) @map("created_at")
+
+  @@map("refresh_tokens")
+}
+
+model MotorVersion {
+  id               String            @id @default(uuid()) @db.Uuid
+  versionTag       String            @unique @map("version_tag") @db.VarChar(50)
+  configJson       Json              @map("config_json")
+  vigenciaInicio   DateTime          @map("vigencia_inicio") @db.Date
+  vigenciaFim      DateTime?         @map("vigencia_fim") @db.Date
+  changelog        String?           @db.Text
+  createdAt        DateTime          @default(now()) @map("created_at")
+  taxCalculations TaxCalculation[]
+
+  @@map("motor_versions")
+}
+
+model Revenue {
+  id              String        @id @default(uuid()) @db.Uuid
+  organizationId  String        @map("organization_id") @db.Uuid
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  competencia     String        @db.Char(7)
+  dataRecebimento DateTime      @map("data_recebimento") @db.Date
+  valorBruto      Decimal       @map("valor_bruto") @db.Decimal(15, 2)
+  descricao       String?       @db.VarChar(500)
+  origem          String?       @db.VarChar(100)
+  status          RevenueStatus @default(PENDING)
+  deletedAt       DateTime?     @map("deleted_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@index([organizationId, competencia])
+  @@map("revenues")
+}
+
+model TaxCalculation {
+  id               String            @id @default(uuid()) @db.Uuid
+  organizationId   String            @map("organization_id") @db.Uuid
+  organization     Organization      @relation(fields: [organizationId], references: [id])
+  motorVersionId   String            @map("motor_version_id") @db.Uuid
+  motorVersion     MotorVersion      @relation(fields: [motorVersionId], references: [id])
+  competencia      String            @db.Char(7)
+  receitaBrutaMes  Decimal           @map("receita_bruta_mes") @db.Decimal(15, 2)
+  rbt12Calculado   Decimal           @map("rbt12_calculado") @db.Decimal(15, 2)
+  fatorRCalculado  Decimal?          @map("fator_r_calculado") @db.Decimal(5, 4)
+  anexoAplicado    AnexoSimples      @map("anexo_aplicado")
+  faixaEnquadrada  Int               @map("faixa_enquadrada")
+  aliquotaNominal  Decimal           @map("aliquota_nominal") @db.Decimal(6, 4)
+  parcelaDeduzir   Decimal           @map("parcela_deduzir") @db.Decimal(15, 2)
+  aliquotaEfetiva  Decimal           @map("aliquota_efetiva") @db.Decimal(6, 4)
+  valorDas         Decimal           @map("valor_das") @db.Decimal(15, 2)
+  status           CalculationStatus @default(DRAFT)
+  finalizedAt      DateTime?         @map("finalized_at")
+  createdAt        DateTime          @default(now()) @map("created_at")
+
+  @@unique([organizationId, competencia], name: "uq_tax_calc_month")
+  @@map("tax_calculations")
+}
+
+model AuditLog {
+  id             BigInt       @id @default(autoincrement())
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  userId         String?      @map("user_id") @db.Uuid
+  user           User?        @relation(fields: [userId], references: [id])
+  action         String       @db.VarChar(100)
+  targetTable    String       @map("target_table") @db.VarChar(100)
+  targetId       String       @map("target_id") @db.Uuid
+  dataBefore     Json?        @map("data_before")
+  dataAfter      Json?        @map("data_after")
+  requestIp      String?      @map("request_ip") @db.Inet
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
