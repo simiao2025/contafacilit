@@ -35,6 +35,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'revenue_status') THEN
         CREATE TYPE revenue_status AS ENUM ('PENDING', 'VALIDATED', 'LOCKED');
     END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
+        CREATE TYPE user_role AS ENUM ('ADMIN', 'CONTADOR', 'COLABORADOR');
+    END IF;
 END $$;
 ```
 
@@ -64,12 +68,28 @@ CREATE TABLE users (
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     full_name VARCHAR(255) NOT NULL,
+    role user_role NOT NULL DEFAULT 'COLABORADOR',
     is_admin BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_users_org ON users(organization_id);
+
+CREATE TABLE refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    is_revoked BOOLEAN NOT NULL DEFAULT FALSE,
+    replaced_by_token_id UUID REFERENCES refresh_tokens(id), -- Para auditoria de rotação
+    user_agent TEXT,
+    ip_address INET,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token_hash);
 ```
 
 ### 3.2 Motor Versions (Metadados Tributários)
